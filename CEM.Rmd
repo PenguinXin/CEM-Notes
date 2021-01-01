@@ -1,0 +1,133 @@
+---
+title: "CEM Notes"
+output: github_document
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+```{r}
+install.packages("cem")
+library(cem)
+
+library(tidyverse)
+```
+
+Use the National Supported Work Demonstration data (Lalonde data set)
+treatment variable -- **treated** is 1 for the treatment group and 0 for the control group
+outcome variable -- **re78**; earnings in 1978
+Pre-treatment variables to control for:
+* age; **age**; categorical
+* years of education; **education**; categorical
+* marital status; **married**; binary
+* lack of a high school diploma; **nodegree**; binary
+* race; **black, hispanic**; binary
+* unemployment in 1974 and 1975; **u74**, **u75**; binary
+* real earnings in 1974 and 1975; **re74**, **re75**; continuous and highly skewed
+* **q1**; a survey question asking an opinion about this job training program; strongly agree, agree, neutral, strongly disagree, disagree, and no options
+  -- Added by Iacus, King, & Porro (2020)
+
+```{r}
+require(cem)
+data("LeLonde")
+
+# Remove missing data
+Le <- data.frame(na.omit(LeLonde))
+
+# Compare the side of the treated and control groups
+tr <- which(Le$treated == 1)
+ct <- which(Le$treated == 0)
+ntr <- length(tr)  # 258 treated units
+nct <- length(ct)  # 392 control units
+
+# Unadjusted difference in means is 759
+mean(Le$re78[tr]) - mean(Le$re78[ct])
+
+# pre-treatment variables to control for
+vars <- c("age", "education", "black", "married", "nodegree", "re74", "re75", "hispanic", "u74", "u75","q1")
+
+# Compute imbalance 
+imbalance(group = Le$treated, data = Le[vars])
+
+# Drop some variables before computation
+todrop <- c("treated", "re78")
+imbalance(group = Le$treated, data = Le, drop = todrop)
+
+## Automated coarsening
+# match on all variables but re78 because that's the outcome variable
+mat <- cem(treatment = "treated", data = Le, drop = "re78", keep.all = TRUE)
+mat
+
+## Choosing the coarsening yourself, rather than using the automated algorithm
+# For categorical variables, we use the grouping option
+# group q1 into three groups
+q1.grp <- list(c("strongly agree", "agree"), c("neutral", "no opinion"), c("strongly disagree", "disagree"))
+
+# For numerical variables, we use the cutpoints option
+# group years of education into grade school, middle school, high school, college, and graduate school
+# 0-6, 708, 9-12, 13-16, > 16
+educut <- c(0, 6.5, 8.5, 12.5, 17)
+
+# run cem again
+mat1 <- cem(treatment = "treated", data = Le, drop = "re78",
+            cutpoints = list(education = educut), grouping = list(q1 = q1.grp))
+mat1
+
+## Progressive coarsening
+# try relax the cem solution by hand
+# a is to have 10 bins on age
+a <- cem("treated", Le, cutpoints = list(age = 10), drop = "re78", grouping = list(q1 = q1.grp))
+# b -- 6 bins on age
+b <- cem("treated", Le, cutpoints = list(age = 6), drop = "re78", grouping = list(q1 = q1.grp))
+# c -- 3 bins on age
+c <- cem("treated", Le, cutpoints = list(age = 3), drop = "re78", grouping = list(q1 = q1.grp))
+# fewer cutpoints (larger bins) produces more matched units and higher maximum
+
+tab <- relax.cem(mat, Le, depth = 1, perc = 0.3) # only the solutions with at least 30% of the units are matched
+
+plot(tab, group = "1", perc = 0.35, unique = TRUE)
+
+# k-to-k match; the same number of treated and control units in all strata
+mat <- cem(treatment = "treated", data = Le, drop = "re78", keep.all = TRUE)
+mat$k2k
+
+mat2 <- k2k(mat, Le, "euclidean", 1)
+mat2$k2k
+
+# Estimate the causal effect from cem output
+data(LL)
+head(LL)
+mat <- cem(treatment = "treated", data = LL, drop = "re78")
+est <- att(mat, re78 ~ treated, data = LL) # linear model
+est
+
+# To apply a statistical model to control for the remaining imbalance
+est2 <- att(mat, re78 ~ treated + re74, data = LL)
+est2
+
+# Dealing with missing values
+# Matching on missingness (treat missing values as one of the values of the variables)
+mat3 <- cem("treated", LeLonde, drop = "re78", cutpoints = mat$breaks, grouping = list(q1 = q1.grp))
+
+# Matching multiply imputed data
+summary(LeLonde)
+
+
+install.packages("Amelia") # to create multiply imputed datasets
+library(Amelia)
+require(Amelia)
+
+imputed <- amelia(LeLonde, noms = c("black", "hispanic", "treated", "married", "nodegree", "u74", "u75", "q1"))
+
+mat2 <- cem("treated", datalist = imputed, drop = "re78", data = LeLonde, grouping = list(q1 = q1.grp))
+
+# Create paired sample
+data(LL)
+head(LL)
+mat <- cem("treated",data = LL, drop = "re78")
+psample <- pair(mat, data = LL)
+```
+
